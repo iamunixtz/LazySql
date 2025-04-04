@@ -1,6 +1,7 @@
 # LazySql
 
 ***LazySql is an open-source tool designed for SQL injection testing. It offers robust functionality and is built to work effectively against 2 mode time based mode and Error based mode***
+## FrameWork Mode
 ```
  lazysql
 [*] StartinG the LazySQL Framework console... -
@@ -44,6 +45,50 @@ LazySQL Documentation: https://docs.lazysql.example.com/
 sql6 >
 
 ```
+## Command Line Mode
+```
+ lazysql -h
+╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+║                                              ██╗      █████╗ ███████╗██╗   ██╗    ███████╗ ██████╗ ██╗                                                   ║
+║                                              ██║     ██╔══██╗╚══███╔╝╚██╗ ██╔╝    ██╔════╝██╔═══██╗██║                                                   ║
+║                                              ██║     ███████║  ███╔╝  ╚████╔╝     ███████╗██║   ██║██║                                                   ║
+║                                              ██║     ██╔══██║ ███╔╝    ╚██╔╝      ╚════██║██║▄▄ ██║██║                                                   ║
+║                                              ███████╗██║  ██║███████╗   ██║       ███████║╚██████╔╝███████╗                                              ║
+║                                              ╚══════╝╚═╝  ╚═╝╚══════╝   ╚═╝       ╚══════╝ ╚══▀▀═╝ ╚══════╝                                              ║
+║                                                                      v1.0 By Iamunixtz                                                                   ║
+╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+usage: lazysql [-h] [-u URL] [-r URLS_FILE] [-p] [-o OUTPUT_FILE] [--proxy PROXY] [--error-payload ERROR_PAYLOAD] [--time-payload TIME_PAYLOAD]
+               [--single-error-payload SINGLE_ERROR_PAYLOAD] [--single-time-payload SINGLE_TIME_PAYLOAD] [--discord DISCORD] [--headers HEADERS]
+               [--threads THREADS] [-X {BOTH}] [-T] [-E]
+
+Detect error-based and time-based SQL injection
+
+options:
+  -h, --help            show this help message and exit
+  -u, --url URL         Single URL for the target
+  -r, --urls_file URLS_FILE
+                        File containing a list of URLs
+  -p, --pipeline        Read from pipeline
+  -o, --output OUTPUT_FILE
+                        Output file for logs
+  --proxy PROXY         Proxy (e.g., http://127.0.0.1:8080)
+  --error-payload ERROR_PAYLOAD
+                        File with error-based payloads (default: errorbased.txt)
+  --time-payload TIME_PAYLOAD
+                        File with time-based payloads (default: payloads.txt)
+  --single-error-payload SINGLE_ERROR_PAYLOAD
+                        Single error-based payload
+  --single-time-payload SINGLE_TIME_PAYLOAD
+                        Single time-based payload
+  --discord DISCORD     Discord Webhook URL
+  --headers HEADERS     File with headers (default: headers.txt)
+  --threads THREADS     Number of threads
+  -X {BOTH}             Test both error-based and time-based SQL injection
+  -T, --time            Test only time-based SQL injection on headers
+  -E, --error           Test only error-based SQL injection on URL and parameters
+```
+
+
 ## Usage
 ```
 sql6 > help
