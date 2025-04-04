@@ -2,6 +2,7 @@
 
 ***LazySql is an open-source tool designed for SQL injection testing. It offers robust functionality and is built to work effectively against 2 mode time based mode and Error based mode***
 ## FrameWork Mode
+![image](https://github.com/user-attachments/assets/4f1e99e9-0cff-4424-a682-191593d9f334)
 ```
  lazysql
 [*] StartinG the LazySQL Framework console... -
@@ -46,6 +47,7 @@ sql6 >
 
 ```
 ## Command Line Mode
+
 ```
  lazysql -h
 ╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
