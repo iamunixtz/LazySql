@@ -1,0 +1,539 @@
+#!/usr/bin/env python3
+# Coded by https://twitter.com/iamunixtz
+
+import sys
+import requests
+import re
+from urllib3.exceptions import InsecureRequestWarning
+import os
+from urllib.parse import urlparse, parse_qs
+import validators
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from termcolor import colored
+from colorama import Fore, Style, init
+import logging
+import shutil
+import time
+import readline
+
+# Initialize colorama
+init()
+
+# Suppress SSL warnings
+requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
+
+# Global variables
+detected = []
+default_error_payloads_file = 'errorbased.txt'
+default_time_payloads_file = 'payloads.txt'
+default_headers_file = 'headers.txt'
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Combined SQL error indicators
+SQL_ERROR_MESSAGES = {
+    "mysql", "sql syntax", "unclosed quotation", "unknown column",
+    "sqlite", "postgres", "ora-", "sql server", "division by zero",
+    "quoted string not properly terminated",
+    "unclosed quotation mark after the character string",
+    "you have an error in your SQL syntax",
+    "unexpected end of SQL command",
+    "unknown column in 'field list'",
+    "Invalid SQL statement",
+    "syntax error at or near",
+    "missing right parenthesis",
+    "Incorrect integer value",
+    "String or binary data would be truncated",
+    "Data type mismatch in criteria expression",
+    "Arithmetic overflow error converting expression",
+    "Subquery returns more than 1 row",
+    "deadlock found when trying to get lock; try restarting transaction",
+    "lock wait timeout exceeded; try restarting transaction",
+    "duplicate entry for key",
+    "column count doesn't match value count at row",
+    "unknown database",
+    "cannot add or update a child row: a foreign key constraint fails",
+    "Cannot delete or update a parent row: a foreign key constraint fails",
+    "Invalid cursor state",
+    "Conversion failed when converting",
+    "Access denied for user",
+    "table does not exist",
+    "Invalid use of NULL",
+    "Cannot rollback - no transaction is active",
+    "Cannot commit - no transaction is active",
+    "Data length too large for column",
+    "Invalid default value for column",
+    "Too many connections",
+    "Command denied to user",
+    "Unable to allocate memory for query",
+    "You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near",
+    "Error: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near ''' at line 1",
+    "Missing or invalid SQL parameter",
+    "NULL value is not allowed for column",
+    "The column name is ambiguous",
+    "Unterminated string literal detected",
+    "Unexpected keyword in query",
+    "Illegal mix of collations",
+    "Warning: mysql_num_rows() expects parameter 1 to be resource",
+    "Warning: mysql_fetch_array() expects parameter 1 to be resource",
+    "MySQL server version for the right syntax",
+    "Data truncation: Data too long for column",
+    "Incorrect database name",
+    "Incorrect table name",
+    "Query execution was interrupted",
+    "Can't find record in table",
+    "Lock wait timeout exceeded",
+    "Error reading communication packets",
+    "Table is full",
+    "Specified key was too long",
+    "Can't open file",
+    "Can't write to the file",
+    "Error 1046: No database selected",
+    "relation does not exist",
+    "column does not exist",
+    "invalid byte sequence for encoding",
+    "out of memory",
+    "operator does not exist",
+    "PostgreSQL error: Fatal error",
+    "Duplicate key violates unique constraint",
+    "Tuple concurrently updated",
+    "No active SQL transaction",
+    "Idle-in-transaction timeout expired",
+    "SQLite3::SQLException: unrecognized token",
+    "SQLITE_MISUSE: API misuse",
+    "SQLite Error 1: no such table",
+    "SQLite Error 19: constraint failed",
+    "database is locked",
+    "disk I/O error",
+    "too many SQL variables",
+    "unable to open database file",
+    "ORA-00933: SQL command not properly ended",
+    "ORA-00942: table or view does not exist",
+    "ORA-00001: unique constraint violated",
+    "ORA-01400: cannot insert NULL into column",
+    "ORA-02292: integrity constraint violated - child record found",
+    "ORA-12514: TNS:listener does not currently know of service requested",
+    "ORA-00904: invalid identifier",
+    "ORA-06550: PL/SQL compilation error",
+    "ORA-01000: maximum open cursors exceeded",
+    "ORA-12154: TNS: could not resolve the connect identifier specified",
+    "Violation of UNIQUE KEY constraint",
+    "Violation of PRIMARY KEY constraint",
+    "Cannot insert explicit value for identity column in table",
+    "Transaction count after EXECUTE indicates a mismatched BEGIN and COMMIT",
+    "Object name cannot be resolved",
+    "Invalid column name",
+    "The multi-part identifier could not be bound",
+    "Incorrect syntax near",
+    "Cannot open database requested by the login",
+    "Cannot resolve collation conflict",
+    "Query timeout expired",
+    "Insufficient system memory to run query",
+    "The target database is in an availability group and currently accessible for connections when the application intent is set to read only",
+    "Cannot drop database because it is currently in use"
+}
+
+# Precompiled SQL error pattern
+SQL_ERROR_PATTERN = re.compile('|'.join(map(re.escape, SQL_ERROR_MESSAGES)), re.IGNORECASE)
+
+def is_valid_url(url):
+    """Validate if the provided string is a valid URL."""
+    return validators.url(url)
+
+def read_headers_from_file(headers_file):
+    """Read headers from a file."""
+    if not os.path.isfile(headers_file):
+        print(colored(f"[!] Headers file '{headers_file}' not found, using default.", 'red'))
+        return ["User-Agent: Mozilla/5.0"]
+    with open(headers_file, 'r') as file:
+        headers = [line.strip() for line in file if ': ' in line]
+        return headers if headers else ["User-Agent: Mozilla/5.0"]
+
+def test_error_based(session, base_url, params, param_to_test, payloads, discord_webhook=None, proxy=None):
+    """Test a parameter or URL for error-based SQL injection."""
+    proxies = {'http': proxy, 'https': proxy} if proxy else None
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    if base_url in detected:
+        return
+
+    test_urls = []
+    if param_to_test is None:
+        test_urls = [f"{base_url}{payload}" for payload in payloads]
+    else:
+        normal_params = {k: v[0] for k, v in params.items()}
+        for payload in payloads:
+            test_params = normal_params.copy()
+            test_params[param_to_test] = payload
+            test_url = f"{base_url.split('?')[0]}?{'&'.join(f'{k}={v}' for k, v in test_params.items())}"
+            test_urls.append(test_url)
+
+    with ThreadPoolExecutor(max_workers=min(len(payloads), 5)) as executor:
+        future_to_url = {executor.submit(session.get, url, headers=headers, verify=False, proxies=proxies, timeout=5): (url, payload)
+                         for url, payload in zip(test_urls, payloads)}
+
+        for future in as_completed(future_to_url):
+            url, payload = future_to_url[future]
+            try:
+                response = future.result()
+                if SQL_ERROR_PATTERN.search(response.text.lower()):
+                    print(colored("[*] Error-based SQL Injection detected", 'green', attrs=['bold']))
+                    print(colored(f"    Target: {url}\n    Parameter: {param_to_test if param_to_test else 'URL'}\n    Payload: {payload}", 'green'))
+                    detected.append(base_url)
+                    if discord_webhook:
+                        send_discord_notification(discord_webhook, url, param_to_test if param_to_test else "URL", payload, "Error-based")
+                    return
+                print(colored(f"[*] No SQL error detected for {url}", 'cyan'))
+            except requests.RequestException as e:
+                print(colored(f"[!] {url} [Request failed: {str(e)[:50]}]", 'red'))
+
+def validate_time_based(url, header, payload, discord_webhook=None, proxy=None):
+    """Validate time-based SQL injection on headers."""
+    proxies = {'http': proxy, 'https': proxy} if proxy else None
+    if url in detected:
+        return
+
+    try:
+        # Normal request
+        normal_headers = {header.split(': ')[0]: header.split(': ')[1]}
+        start_time = time.time()
+        response_normal = requests.get(url, headers=normal_headers, verify=False, proxies=proxies, timeout=20)
+        normal_time = time.time() - start_time
+
+        # Time-based payload request (15-second delay)
+        payload_15 = payload.replace("%__TIME_OUT__%", "15")
+        test_headers = {header.split(': ')[0]: header.split(': ')[1] + payload_15}
+        start_time = time.time()
+        response_delayed = requests.get(url, headers=test_headers, verify=False, proxies=proxies, timeout=20)
+        delay_time = time.time() - start_time
+
+        if delay_time - normal_time >= 14:  # Check for significant delay
+            print(colored("[*] Time-based Blind SQL Injection verified", 'green', attrs=['bold']))
+            print(colored(f"    Target: {url}\n    Header: {header}\n    Payload: {payload_15}", 'green'))
+            detected.append(url)
+            if discord_webhook:
+                send_discord_notification(discord_webhook, url, header, payload_15, "Time-based")
+        else:
+            print(colored(f"[*] No significant delay detected for {url} ({delay_time:.2f}s vs {normal_time:.2f}s)", 'yellow'))
+    except requests.RequestException as e:
+        print(colored(f"[!] {url} [Request failed: {str(e)[:50]}]", 'red'))
+
+def process_url(url, error_payloads, time_payloads, headers, discord_webhook, proxy, test_mode):
+    """Process a URL with error-based and time-based SQL injection tests."""
+    if not is_valid_url(url):
+        print(colored(f"[!] Invalid URL: {url}", 'red'))
+        return
+
+    session = requests.Session()
+
+    if test_mode in ["BOTH", "ERROR"]:
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
+        test_error_based(session, url, query_params, None, error_payloads, discord_webhook, proxy)
+        if url not in detected:
+            for param in query_params.keys():
+                if url in detected:
+                    break
+                test_error_based(session, url, query_params, param, error_payloads, discord_webhook, proxy)
+
+    if test_mode in ["BOTH", "TIME"] and url not in detected:
+        for payload in time_payloads:
+            if not payload.strip():  # Skip empty lines
+                continue
+            for header in headers:
+                if not header.strip():  # Skip empty lines
+                    continue
+                print(colored(f"[*] Testing time-based injection on {url} with header: {header}", 'cyan'))
+                validate_time_based(url, header, payload, discord_webhook, proxy)
+                if url in detected:
+                    break
+            if url in detected:
+                break
+
+    session.close()
+
+def send_discord_notification(webhook_url, url, param_or_header, payload, injection_type):
+    """Send a notification to the Discord webhook."""
+    discord_data = {
+        "content": f"{injection_type} SQL Injection Detected!\nURL: {url}\n{'Parameter' if injection_type == 'Error-based' else 'Header'}: {param_or_header}\nPayload: {payload}"
+    }
+    try:
+        requests.post(webhook_url, json=discord_data)
+        print(colored(f"[*] Discord notification sent for {injection_type} detection", 'green'))
+    except requests.RequestException as e:
+        print(colored(f"[!] Failed to send Discord notification: {e}", 'red'))
+
+def startup_sequence():
+    """Display the startup sequence with a single spinning \\ loading animation."""
+    spinner = ['\\', '|', '/', '-']
+    print(colored("[*] StartinG the LazySQL Framework console... ", 'cyan'), end="")
+    for _ in range(40):  # 10 seconds at 0.25s per frame
+        for char in spinner:
+            sys.stdout.write(colored(char, 'cyan'))
+            sys.stdout.flush()
+            time.sleep(0.25)
+            sys.stdout.write('\b')
+    print(colored("\n[*] LazySQL Framework Loaded!", 'green'))
+    print("\nCall trans opt: received. 2-19-98 13:24:18 REC:Loc\n")
+    print("     Trace program: running\n")
+    print("           wake up, Neo...")
+    print("        the matrix has you")
+    print("      follow the white rabbit.\n")
+    print("          knock, knock, Neo.\n")
+    print(colored("""
+                        (`.         ,-,
+                        ` `.    ,;' /
+                         `.  ,'/ .'
+                          `. X /.'
+                .-;--''--.._` ` (
+              .'            /   `
+             ,           ` '   Q '
+             ,         ,   `._    \\
+          ,.|         '     `-.;_'
+          :  . `  ;    `  ` --,.._;
+           ' `    ,   )   .'
+              `._ ,  '   /_
+                 ; ,''-,;' ``-
+                  ``-..__``--`
+    """, 'green'))
+    print(colored("                             https://lazysql.example.com\n", 'yellow'))
+    print(colored("       =[ LazySQL v1.0-dev                          ]", 'cyan'))
+    print(colored("+ -- --=[ 2 Modes - Error & Time Payloads    ]", 'cyan'))
+    print(colored("+ -- --=[ File mode - URL mode - Pipeline    ]", 'cyan'))
+    print(colored("+ -- --=[ SQL Injection Scanner              ]", 'cyan'))
+    print(colored("\nLazySQL Documentation: https://docs.lazysql.example.com/\n", 'yellow'))
+
+def show_options(config):
+    """Display current configuration settings without dashed lines."""
+    print(colored("\nCurrent Options:", 'cyan', attrs=['bold']))
+    print(f"{'Option':<20} {'Value':<50}")
+    target_urls = config['urls'][0] if len(config['urls']) == 1 else (f"{config['urls_file']} ({len(config['urls'])} URLs loaded)" if config['urls_file'] else str(config['urls'])[:47] + "..." if config['urls'] else "Not set")
+    print(f"{'TARGET_URLS':<20} {target_urls:<50}")
+    print(f"{'PROXY':<20} {config['proxy'] if config['proxy'] else 'Not set':<50}")
+    print(f"{'ERROR_PAYLOAD_FILE':<20} {config['error_payload_file']:<50}")
+    print(f"{'TIME_PAYLOAD_FILE':<20} {config['time_payload_file']:<50}")
+    print(f"{'SINGLE_ERROR_PAYLOAD':<20} {config['single_error_payload'] if config['single_error_payload'] else 'Not set':<50}")
+    print(f"{'SINGLE_TIME_PAYLOAD':<20} {config['single_time_payload'] if config['single_time_payload'] else 'Not set':<50}")
+    print(f"{'DISCORD_WEBHOOK':<20} {config['discord'] if config['discord'] else 'Not set':<50}")
+    print(f"{'HEADERS_FILE':<20} {config['headers_file']:<50}")
+    print(f"{'THREADS':<20} {config['threads']:<50}")
+    print(f"{'OUTPUT_FILE':<20} {config['output_file'] if config['output_file'] else 'Not set':<50}")
+    print(f"{'TEST_MODE':<20} {config['test_mode'] if config['test_mode'] else 'Not set':<50}")
+
+def show_help():
+    """Display usage manual."""
+    print(colored("\nLazySQL Usage Manual:", 'cyan', attrs=['bold']))
+    print(colored("Commands:", 'yellow'))
+    print(f"{'SET TARGET_URLS <url>':<30} - Set a single target URL")
+    print(f"{'SET URLS_FILE <file>':<30} - Set a file containing URLs")
+    print(f"{'SET PIPELINE':<30} - Read URLs from pipeline (stdin)")
+    print(f"{'SET PROXY <proxy>':<30} - Set proxy (e.g., http://127.0.0.1:8080)")
+    print(f"{'SET ERROR_PAYLOAD <file>':<30} - Set error payload file")
+    print(f"{'SET TIME_PAYLOAD <file>':<30} - Set time payload file")
+    print(f"{'SET SINGLE_ERROR <payload>':<30} - Set single error payload")
+    print(f"{'SET SINGLE_TIME <payload>':<30} - Set single time payload")
+    print(f"{'SET WEBHOOK <url>':<30} - Set Discord webhook URL")
+    print(f"{'SET HEADERS <file>':<30} - Set headers file")
+    print(f"{'SET THREADS <number>':<30} - Set number of threads")
+    print(f"{'SET OUTPUT <file>':<30} - Set output log file")
+    print(f"{'SET MODE <ERROR|TIME|BOTH>':<30} - Set testing mode")
+    print(f"{'OPTIONS':<30} - Show current settings")
+    print(f"{'RUN | EXPLOIT':<30} - Start the scanning process")
+    print(f"{'HELP':<30} - Show this manual")
+    print(f"{'EXIT':<30} - Exit LazySQL")
+
+def main():
+    """Main function with MSFConsole-like interface."""
+    config = {
+        'urls': [],
+        'urls_file': None,
+        'proxy': None,
+        'error_payload_file': default_error_payloads_file,
+        'time_payload_file': default_time_payloads_file,
+        'single_error_payload': None,
+        'single_time_payload': None,
+        'discord': None,
+        'headers_file': default_headers_file,
+        'threads': 1,
+        'output_file': None,
+        'test_mode': None
+    }
+
+    startup_sequence()
+    prompt = colored("sql6 > ", 'red', attrs=['bold'])
+
+    readline.set_history_length(1000)
+
+    while True:
+        try:
+            command = input(prompt).strip()
+            if not command:
+                continue
+
+            if command.startswith('\x1b['):
+                print(colored("[!] Arrow keys detected - use Up/Down for history", 'yellow'))
+                continue
+
+            parts = command.split(maxsplit=2)
+            cmd = parts[0].upper()
+            args = parts[1:] if len(parts) > 1 else []
+
+            if cmd in ('01', '1', 'SET') and args and args[0].upper() == 'TARGET_URLS':
+                value = args[1] if len(args) > 1 else input(colored("Enter URL: ", 'cyan'))
+                if is_valid_url(value):
+                    config['urls'] = [value]
+                    config['urls_file'] = None
+                    print(colored(f"[*] TARGET_URLS => {value}", 'green'))
+                else:
+                    print(colored("[!] Invalid URL", 'red'))
+
+            elif cmd in ('02', '2', 'SET') and args and args[0].upper() == 'URLS_FILE':
+                file_path = args[1] if len(args) > 1 else input(colored("Enter file path: ", 'cyan'))
+                if os.path.isfile(file_path):
+                    with open(file_path, 'r') as file:
+                        config['urls'] = list(set(file.read().splitlines()))
+                    config['urls_file'] = os.path.basename(file_path)
+                    print(colored(f"[*] URLS_FILE => {config['urls_file']} ({len(config['urls'])} URLs loaded)", 'green'))
+                else:
+                    print(colored("[!] File not found", 'red'))
+
+            elif cmd in ('03', '3', 'SET') and args and args[0].upper() == 'PIPELINE':
+                print(colored("[*] Reading URLs from pipeline (Ctrl+D or Ctrl+Z to finish)", 'yellow'))
+                config['urls'] = list(set(url.strip() for url in sys.stdin.readlines()))
+                config['urls_file'] = None
+                print(colored(f"[*] PIPELINE => {len(config['urls'])} URLs loaded", 'green'))
+
+            elif cmd in ('04', '4', 'SET') and args and args[0].upper() == 'PROXY':
+                proxy = args[1] if len(args) > 1 else input(colored("Enter proxy: ", 'cyan'))
+                config['proxy'] = proxy
+                print(colored(f"[*] PROXY => {proxy}", 'green'))
+
+            elif cmd in ('05', '5', 'SET') and args and args[0].upper() == 'ERROR_PAYLOAD':
+                file_path = args[1] if len(args) > 1 else input(colored("Enter error payload file: ", 'cyan'))
+                if os.path.isfile(file_path):
+                    config['error_payload_file'] = file_path
+                    print(colored(f"[*] ERROR_PAYLOAD_FILE => {file_path}", 'green'))
+                else:
+                    print(colored("[!] File not found", 'red'))
+
+            elif cmd in ('06', '6', 'SET') and args and args[0].upper() == 'TIME_PAYLOAD':
+                file_path = args[1] if len(args) > 1 else input(colored("Enter time payload file: ", 'cyan'))
+                if os.path.isfile(file_path):
+                    config['time_payload_file'] = file_path
+                    print(colored(f"[*] TIME_PAYLOAD_FILE => {file_path}", 'green'))
+                else:
+                    print(colored("[!] File not found", 'red'))
+
+            elif cmd in ('07', '7', 'SET') and args and args[0].upper() == 'SINGLE_ERROR':
+                payload = args[1] if len(args) > 1 else input(colored("Enter single error payload: ", 'cyan'))
+                config['single_error_payload'] = payload
+                print(colored(f"[*] SINGLE_ERROR_PAYLOAD => {payload}", 'green'))
+
+            elif cmd in ('08', '8', 'SET') and args and args[0].upper() == 'SINGLE_TIME':
+                payload = args[1] if len(args) > 1 else input(colored("Enter single time payload: ", 'cyan'))
+                config['single_time_payload'] = payload
+                print(colored(f"[*] SINGLE_TIME_PAYLOAD => {payload}", 'green'))
+
+            elif cmd in ('09', '9', 'SET') and args and args[0].upper() == 'WEBHOOK':
+                webhook = args[1] if len(args) > 1 else input(colored("Enter Discord webhook URL: ", 'cyan'))
+                config['discord'] = webhook
+                print(colored(f"[*] DISCORD_WEBHOOK => {webhook}", 'green'))
+
+            elif cmd in ('10', 'SET') and args and args[0].upper() == 'HEADERS':
+                file_path = args[1] if len(args) > 1 else input(colored("Enter headers file: ", 'cyan'))
+                if os.path.isfile(file_path):
+                    config['headers_file'] = file_path
+                    print(colored(f"[*] HEADERS_FILE => {file_path}", 'green'))
+                else:
+                    print(colored("[!] File not found", 'red'))
+
+            elif cmd in ('11', 'SET') and args and args[0].upper() == 'THREADS':
+                threads = args[1] if len(args) > 1 else input(colored("Enter number of threads: ", 'cyan'))
+                try:
+                    config['threads'] = int(threads)
+                    print(colored(f"[*] THREADS => {threads}", 'green'))
+                except ValueError:
+                    print(colored("[!] Invalid number", 'red'))
+
+            elif cmd in ('12', 'SET') and args and args[0].upper() == 'OUTPUT':
+                output_file = args[1] if len(args) > 1 else input(colored("Enter output file: ", 'cyan'))
+                config['output_file'] = output_file
+                print(colored(f"[*] OUTPUT_FILE => {output_file}", 'green'))
+
+            elif cmd in ('13', 'SET') and args and args[0].upper() == 'MODE':
+                mode = args[1].upper() if len(args) > 1 else input(colored("Enter mode (ERROR/TIME/BOTH): ", 'cyan')).upper()
+                if mode in ('ERROR', 'TIME', 'BOTH'):
+                    config['test_mode'] = mode
+                    print(colored(f"[*] TEST_MODE => {mode}", 'green'))
+                else:
+                    print(colored("[!] Invalid mode (use ERROR, TIME, or BOTH)", 'red'))
+
+            elif cmd == 'OPTIONS':
+                show_options(config)
+
+            elif cmd in ('RUN', 'EXPLOIT'):
+                if not config['urls']:
+                    print(colored("[!] No URLs specified", 'red'))
+                    continue
+                if not config['test_mode']:
+                    print(colored("[!] Test mode not selected", 'red'))
+                    continue
+
+                show_options(config)
+                print(colored("\n[*] View the full module info with the info, or info -d command.", 'yellow'))
+
+                if config['single_error_payload']:
+                    error_payloads = [config['single_error_payload']]
+                else:
+                    with open(config['error_payload_file'], 'r') as file:
+                        error_payloads = [line.strip() for line in file if line.strip()]
+
+                if config['single_time_payload']:
+                    time_payloads = [config['single_time_payload']]
+                else:
+                    with open(config['time_payload_file'], 'r') as file:
+                        time_payloads = [line.strip() for line in file if line.strip()]
+
+                headers = read_headers_from_file(config['headers_file'])
+
+                if config['output_file']:
+                    file_handler = logging.FileHandler(config['output_file'])
+                    file_handler.setFormatter(logging.Formatter('%(message)s'))
+                    logger.addHandler(file_handler)
+
+                with ThreadPoolExecutor(max_workers=config['threads']) as executor:
+                    print(colored("\n[*] Legal Disclaimer: We Passed Like A Shadow", 'yellow'))
+                    start_time = datetime.now()
+                    print(colored(f"[*] Starting @ {start_time.strftime('%H:%M:%S %Y-%m-%d')} in {config['test_mode']} mode", 'cyan'))
+                    logger.info(f"[INFO] Starting @ {start_time.strftime('%H:%M:%S %Y-%m-%d')} in {config['test_mode']} mode")
+
+                    for url in config['urls']:
+                        if url not in detected:
+                            executor.submit(process_url, url, error_payloads, time_payloads, headers, config['discord'], config['proxy'], config['test_mode'])
+
+                    end_time = datetime.now()
+                    print(colored(f"[*] Finished @ {end_time.strftime('%H:%M:%S %Y-%m-%d')}", 'cyan'))
+                    logger.info(f"[INFO] Finished @ {end_time.strftime('%H:%M:%S %Y-%m-%d')}")
+                    print(colored(f"[*] Duration: {end_time - start_time}", 'cyan'))
+                    logger.info(f"[INFO] Duration: {end_time - start_time}")
+
+            elif cmd == 'HELP':
+                show_help()
+
+            elif cmd == 'EXIT':
+                print(colored("[*] Exiting LazySQL", 'yellow'))
+                sys.exit(0)
+
+            else:
+                print(colored(f"[!] Unknown command: {command}", 'red'))
+                print(colored("Type 'HELP' for usage manual", 'yellow'))
+
+        except KeyboardInterrupt:
+            print(colored("\n[*] Interrupted by user", 'yellow'))
+            continue
+        except EOFError:
+            print(colored("\n[*] EOF detected, exiting", 'yellow'))
+            sys.exit(0)
+
+if __name__ == '__main__':
+    main()
